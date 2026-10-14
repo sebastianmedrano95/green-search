@@ -10,6 +10,8 @@ plain dictionaries. Keep UI-specific dialogs and window startup here.
 import os
 import platform
 import subprocess
+import ctypes
+from ctypes import wintypes
 import tkinter as tk
 from tkinter import filedialog
 import webview
@@ -231,10 +233,10 @@ document.getElementById('nav-search').onclick=()=>setView('search');document.get
 async function loadComparisonFile(slot){try{const data=await window.pywebview.api.choose_snapshot();if(!data)return;if(data.error){$('compare-status').textContent=data.error;return}comparisonFiles[slot]=data.path;$(`xml-${slot}-name`).textContent=data.name;$('compare-status').textContent='XML cargado correctamente.'}catch(e){$('compare-status').textContent='Error al cargar XML: '+e}}
 $('load-xml-a').onclick=()=>loadComparisonFile('a');$('load-xml-b').onclick=()=>loadComparisonFile('b');
 $('run-compare').onclick=async()=>{if(!comparisonFiles.a||!comparisonFiles.b){$('compare-status').textContent='Carga ambos archivos XML.';return}try{const data=await window.pywebview.api.compare_snapshots(comparisonFiles.a,comparisonFiles.b);if(!data.ok){$('compare-status').textContent=data.error;return}const rows=$('compare-rows');rows.replaceChildren();$('compare-empty').classList.toggle('hidden',data.items.length>0);$('compare-table').classList.toggle('hidden',data.items.length===0);if(!data.items.length)$('compare-empty').innerHTML='<div><strong>No hay archivos nuevos</strong>XML B no contiene rutas nuevas frente a XML A.</div>';for(const file of data.items){const tr=document.createElement('tr');for(const [value,cls] of [[file.name,'file-name'],[file.folder,''],[file.size,''],[file.modified,'']]){const td=document.createElement('td');td.textContent=value;if(cls)td.className=cls;td.title=value;tr.appendChild(td)}rows.appendChild(tr)}$('compare-status').textContent=`Comparación completa: ${data.items.length} nuevo(s) en XML B.`}catch(e){$('compare-status').textContent='Error en comparación: '+e}};
-async function clip(value){if(!value)return;try{const result=await window.pywebview.api.copy_text(value);setStatus(result.ok?'Ruta copiada al portapapeles.':result.error,result.ok)}catch(e){setStatus('Error al copiar: '+e)}}
-function chosen(){return results.find((_,i)=>i===selected)}
-$('copyFolder').onclick=()=>{const r=chosen();if(r)clip(r.folder);else setStatus('Selecciona un archivo.')};$('copyFile').onclick=()=>{const r=chosen();if(r)clip(r.path);else setStatus('Selecciona un archivo.')};$('openFolder').onclick=async()=>{const r=chosen();if(r){const x=await window.pywebview.api.open_folder(r.path);if(!x.ok)setStatus(x.error)}else setStatus('Selecciona un archivo.')};$('openFile').onclick=async()=>{const r=chosen();if(r){const x=await window.pywebview.api.open_file(r.path);if(!x.ok)setStatus(x.error)}else setStatus('Selecciona un archivo.')};
-async function poll(){try{const data=await window.pywebview.api.get_updates();if(data.items.length){for(const r of data.items)results.push(r);render();if(searching)setStatus(`Buscando... ${results.length} encontrados.`)}if(data.done){searching=false;$('search').textContent='Buscar archivos';$('search').classList.remove('stop');$('stateText').textContent='Listo';setStatus(data.done,true)}}catch(e){}setTimeout(poll,250)}window.addEventListener('pywebviewready',poll);
+async function clip(value){if(!value){setStatus('No hay una ruta para copiar.');return}try{const result=await window.pywebview.api.copy_text(value);setStatus(result.ok?'Ruta copiada al portapapeles.':result.error,result.ok)}catch(e){setStatus('Error al copiar: '+e)}}
+function chosen(){return selected>=0?results[selected]:null}
+$('copyFolder').onclick=()=>{const r=chosen();if(r)clip(r.folder);else setStatus('Selecciona una fila de archivo antes de copiar.')};$('copyFile').onclick=()=>{const r=chosen();if(r)clip(r.path);else setStatus('Selecciona una fila de archivo antes de copiar.')};$('openFolder').onclick=async()=>{const r=chosen();if(r){const x=await window.pywebview.api.open_folder(r.path);if(!x.ok)setStatus(x.error)}else setStatus('Selecciona un archivo.')};$('openFile').onclick=async()=>{const r=chosen();if(r){const x=await window.pywebview.api.open_file(r.path);if(!x.ok)setStatus(x.error)}else setStatus('Selecciona un archivo.')};
+async function poll(){try{const data=await window.pywebview.api.get_updates();if(data.items.length){const wasEmpty=results.length===0;for(const r of data.items)results.push(r);if(wasEmpty&&results.length)selected=0;render();if(searching)setStatus(`Buscando... ${results.length} encontrados.`)}if(data.done){searching=false;$('search').textContent='Buscar archivos';$('search').classList.remove('stop');$('stateText').textContent='Listo';setStatus(data.done,true)}}catch(e){}setTimeout(poll,250)}window.addEventListener('pywebviewready',poll);
 </script>
 </body>
 </html>'''
@@ -267,6 +269,12 @@ class SearchApi:
         return {"path": os.path.abspath(path), "name": os.path.basename(path)}
 
     def copy_text(self, text):
+        text = str(text)
+        if platform.system() == "Windows":
+            try:
+                return self._copy_text_windows(text)
+            except OSError as exc:
+                return {"ok": False, "error": f"No se pudo copiar la ruta al portapapeles: {exc}"}
         root = tk.Tk()
         root.withdraw()
         try:
@@ -278,6 +286,52 @@ class SearchApi:
             return {"ok": False, "error": f"No se pudo copiar al portapapeles: {exc}"}
         finally:
             root.destroy()
+
+    @staticmethod
+    def _copy_text_windows(text):
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        GMEM_MOVEABLE = 0x0002
+        CF_UNICODETEXT = 13
+        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel32.GlobalAlloc.argtypes = (wintypes.UINT, ctypes.c_size_t)
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = (wintypes.HGLOBAL,)
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
+        kernel32.GlobalUnlock.argtypes = (wintypes.HGLOBAL,)
+        kernel32.GlobalFree.restype = wintypes.HGLOBAL
+        kernel32.GlobalFree.argtypes = (wintypes.HGLOBAL,)
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.OpenClipboard.argtypes = (wintypes.HWND,)
+        user32.EmptyClipboard.restype = wintypes.BOOL
+        user32.SetClipboardData.restype = wintypes.HANDLE
+        user32.SetClipboardData.argtypes = (wintypes.UINT, wintypes.HANDLE)
+        user32.CloseClipboard.restype = wintypes.BOOL
+        if not user32.OpenClipboard(None):
+            raise OSError("Windows no pudo abrir el portapapeles.")
+        handle = None
+        try:
+            if not user32.EmptyClipboard():
+                raise OSError("Windows no pudo vaciar el portapapeles.")
+            encoded = (text + "\0").encode("utf-16-le")
+            handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+            if not handle:
+                raise OSError("Windows no pudo reservar memoria para la ruta.")
+            pointer = kernel32.GlobalLock(handle)
+            if not pointer:
+                raise OSError("Windows no pudo bloquear memoria para la ruta.")
+            try:
+                ctypes.memmove(pointer, encoded, len(encoded))
+            finally:
+                kernel32.GlobalUnlock(handle)
+            if not user32.SetClipboardData(CF_UNICODETEXT, handle):
+                raise OSError("Windows no pudo guardar la ruta en el portapapeles.")
+            handle = None  # The clipboard owns the allocation after SetClipboardData.
+            return {"ok": True}
+        finally:
+            if handle:
+                kernel32.GlobalFree(handle)
+            user32.CloseClipboard()
 
     def start_search(self, root_dir, name_query, extension):
         return self.search_engine.start_search(root_dir, name_query, extension)
