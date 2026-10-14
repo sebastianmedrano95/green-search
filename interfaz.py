@@ -238,3 +238,109 @@ async function poll(){try{const data=await window.pywebview.api.get_updates();if
 </script>
 </body>
 </html>'''
+
+
+class SearchApi:
+    """GUI adapter that delegates search and XML operations to standalone engines."""
+
+    def __init__(self):
+        self.search_engine = SearchEngine()
+        self.snapshot_engine = SnapshotEngine()
+
+    def _dialog(self, callback, **options):
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        try:
+            return callback(parent=root, **options)
+        finally:
+            root.destroy()
+
+    def choose_folder(self):
+        return self._dialog(filedialog.askdirectory, title="Seleccionar carpeta")
+
+    def choose_snapshot(self):
+        path = self._dialog(filedialog.askopenfilename, title="Seleccionar captura XML",
+            filetypes=[("Archivos XML", "*.xml"), ("Todos los archivos", "*.*")])
+        if not path:
+            return None
+        return {"path": os.path.abspath(path), "name": os.path.basename(path)}
+
+    def copy_text(self, text):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(str(text))
+            root.update()
+            return {"ok": True}
+        except tk.TclError as exc:
+            return {"ok": False, "error": f"No se pudo copiar al portapapeles: {exc}"}
+        finally:
+            root.destroy()
+
+    def start_search(self, root_dir, name_query, extension):
+        return self.search_engine.start_search(root_dir, name_query, extension)
+
+    def stop_search(self):
+        return self.search_engine.stop_search()
+
+    def get_updates(self):
+        return self.search_engine.get_updates()
+
+    def choose_export_destination(self):
+        filename = "busqueda_" + __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S") + ".xml"
+        path = self._dialog(filedialog.asksaveasfilename, title="Exportar resultados de búsqueda",
+            defaultextension=".xml", initialfile=filename,
+            filetypes=[("Archivo XML", "*.xml")])
+        if not path:
+            return {"ok": False, "cancelled": True}
+        if not path.lower().endswith(".xml"):
+            path += ".xml"
+        return {"ok": True, "path": path}
+
+    def export_results(self, target, files, search_root, query, extension):
+        return self.snapshot_engine.export_results(files, search_root, query, extension, target)
+
+    def compare_snapshots(self, older_path, newer_path):
+        return self.snapshot_engine.compare_snapshots(older_path, newer_path)
+
+    def open_file(self, path):
+        if not os.path.isfile(path):
+            return {"ok": False, "error": "El archivo ya no existe."}
+        try:
+            if platform.system() == "Windows":
+                os.startfile(path)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+            return {"ok": True}
+        except OSError as exc:
+            return {"ok": False, "error": f"No se pudo abrir el archivo: {exc}"}
+
+    def open_folder(self, path):
+        folder = os.path.dirname(path)
+        if not os.path.isdir(folder):
+            return {"ok": False, "error": "La carpeta ya no existe."}
+        try:
+            if platform.system() == "Windows":
+                subprocess.Popen(["explorer", "/select,", path])
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", "-R", path])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+            return {"ok": True}
+        except OSError as exc:
+            return {"ok": False, "error": f"No se pudo abrir la carpeta: {exc}"}
+
+
+def main():
+    api = SearchApi()
+    webview.create_window("Green Search", html=HTML, js_api=api, width=1180, height=780,
+        min_size=(760, 560), background_color="#101613")
+    webview.start()
+
+
+if __name__ == "__main__":
+    main()
