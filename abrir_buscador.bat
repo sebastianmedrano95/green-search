@@ -2,7 +2,7 @@
 setlocal
 
 set "SCRIPT_DIR=%~dp0"
-set "APP=%SCRIPT_DIR%buscador.py"
+set "APP=%SCRIPT_DIR%interfaz.py"
 
 where py >nul 2>nul
 if not errorlevel 1 (
